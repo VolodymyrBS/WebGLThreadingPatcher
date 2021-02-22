@@ -2,6 +2,6 @@
   "name": "com.tools.webglthreadingpatcher",
   "displayName": "WebGL Threading Patcher",
   "version": "0.0.1",
-  "unity": "2018.4",
-  "src": "Assets/Editor"
+  "unity": "2019.3",
+  "src": "Assets/ThreadingPatcher"
 }
