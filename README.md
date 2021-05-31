@@ -12,7 +12,7 @@ await task.ConfigureAwait(false);
 await Task.Delay(1000);
 ```
 
-## How Doese it works?
+## How Does it works?
 
 This plug-in use IIl2CppProcessor callback to hijack mscorelib and change some methods implementation.
 It change ThreadPool methods that enqueue work items to delegate work to SynchronizationContext so all items will be executed in same thread.
