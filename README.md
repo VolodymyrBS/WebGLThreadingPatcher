@@ -20,4 +20,4 @@ Also it patch Timer implementation to use Javascript timer functionality.
 
 ## Limitation
 
-All tasks will be executed by just one thread so any blocking calls will freeze whole application. Basically it similBlazor async await behavior in Blazor. 
+All tasks will be executed by just one thread so any blocking calls will freeze whole application. Basically it similar to async await behavior in Blazor. 
