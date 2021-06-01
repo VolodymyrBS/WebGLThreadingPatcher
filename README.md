@@ -18,6 +18,6 @@ This plug-in use IIl2CppProcessor callback to hijack mscorelib and change some m
 It change ThreadPool methods that enqueue work items to delegate work to SynchronizationContext so all items will be executed in same thread.
 Also it patch Timer implementation to use Javascript timer functionality.
 
-## Limitation
+## Limitations
 
 All tasks will be executed by just one thread so any blocking calls will freeze whole application. Basically it similar to async await behavior in Blazor. 
