@@ -5,23 +5,27 @@ using System.Linq;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
-using UnityEditor.Il2Cpp;
 using UnityEngine;
 
 namespace WebGLThreadingPatcher
 {
-    public class ThreadingPatcher : IIl2CppProcessor
+    public class ThreadingPatcher : IPostBuildPlayerScriptDLLs
     {
         public int callbackOrder => 0;
 
-        public void OnBeforeConvertRun(
-            BuildReport report,
-            Il2CppBuildPipelineData data)
+        public void OnPostBuildPlayerScriptDLLs(BuildReport report)
         {
-            if (data.target != UnityEditor.BuildTarget.WebGL)
+            if (report.summary.platform != BuildTarget.WebGL)
                 return;
 
-            using (var assembly = AssemblyDefinition.ReadAssembly(Path.Combine(data.inputDirectory, "mscorlib.dll"), new ReaderParameters(ReadingMode.Immediate) { ReadWrite = true }))
+            var mscorLibDll = report.files.FirstOrDefault(f => f.path.EndsWith("mscorlib.dll")).path;
+            if (mscorLibDll == null)
+            {
+                Debug.LogError("Can't find mscorlib.dll in build dll files");
+                return;
+            }
+
+            using (var assembly = AssemblyDefinition.ReadAssembly(Path.Combine(mscorLibDll), new ReaderParameters(ReadingMode.Immediate) { ReadWrite = true }))
             {
                 var mainModule = assembly.MainModule;
                 if (!TryGetTypes(mainModule, out var threadPool, out var synchronizationContext, out var postCallback, out var waitCallback, out var taskExecutionItem, out var timeScheduler))
@@ -29,7 +33,7 @@ namespace WebGLThreadingPatcher
 
                 PatchThreadPool(mainModule, threadPool, synchronizationContext, postCallback, waitCallback, taskExecutionItem);
 
-                PatchTimerScheduler(mainModule, timeScheduler, threadPool, waitCallback);
+                //PatchTimerScheduler(mainModule, timeScheduler, threadPool, waitCallback);
                 assembly.Write();
             }
         }
@@ -45,7 +49,7 @@ namespace WebGLThreadingPatcher
 
                 PatchThreadPool(mainModule, threadPool, synchronizationContext, postCallback, waitCallback, taskExecutionItem);
 
-                PatchTimerScheduler(mainModule, timeScheduler, threadPool, waitCallback);
+                //PatchTimerScheduler(mainModule, timeScheduler, threadPool, waitCallback);
                 assembly.Write("D:\\mscorlib_p.dll");
             }
         }
@@ -58,6 +62,10 @@ namespace WebGLThreadingPatcher
             {
                 switch (methodDefinition.Name)
                 {
+                    case "QueueUserWorkItem" when methodDefinition.HasGenericParameters:
+                    case "UnsafeQueueUserWorkItem" when methodDefinition.HasGenericParameters:
+                        PatchQueueUserWorkItemGeneric(mainModule, methodDefinition, synchronizationContext, waitCallback, postCallback);
+                        break;
                     case "QueueUserWorkItem":
                     case "UnsafeQueueUserWorkItem":
                         PatchQueueUserWorkItem(mainModule, methodDefinition, synchronizationContext, waitCallback, postCallback);
@@ -77,8 +85,133 @@ namespace WebGLThreadingPatcher
                     case "SetMinThreads":
                         PatchSetThreads(methodDefinition);
                         break;
-                }   
+                }
             }
+        }
+
+        /// <summary>
+        /// Creates following class
+        /// <code>
+        /// class <>_GenericWrapper<T>
+        /// {
+        ///     public Action<T> callabck;
+        ///     
+        ///     public void Invoke(object state)
+        ///     {
+        ///         callback((T)state);
+        ///     }
+        /// }
+        /// </code>
+        /// </summary>
+        /// <param name="moduleDefinition"></param>
+        /// <returns></returns>
+        private static TypeDefinition GetGenericToObjectDelegateWrapper(ModuleDefinition moduleDefinition)
+        {
+            const string Namespace = "System.Threading";
+            const string ClassName = "<>_GenericWrapper";
+            if (moduleDefinition.Types.FirstOrDefault(t => t.Namespace == Namespace && t.Name == ClassName) is { } wrapper)
+            {
+                return wrapper;
+            }
+
+            var genericWrapper = new TypeDefinition(Namespace, ClassName, TypeAttributes.AnsiClass | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit);
+            var genericParameter = new GenericParameter("T", genericWrapper);
+            genericWrapper.GenericParameters.Add(genericParameter);
+
+            var (actionOfT, callbackField) = CreateCallbackField(moduleDefinition, genericWrapper, genericParameter);
+            var ctor = CreateConstructor(moduleDefinition, callbackField);
+            var wrapMethod = CreateInvokeMethod(moduleDefinition, genericParameter, actionOfT, callbackField);
+
+            genericWrapper.Methods.Add(ctor);
+            genericWrapper.Methods.Add(wrapMethod);
+
+            moduleDefinition.Types.Add(genericWrapper);
+            return genericWrapper;
+
+            static (TypeReference, FieldReference) CreateCallbackField(ModuleDefinition moduleDefinition, TypeDefinition genericWrapper, GenericParameter genericParameter)
+            {
+                var actionType = moduleDefinition.Types.First(t => t.FullName == "System.Action`1" && t.GenericParameters.Count == 1);
+                var actionOfT = new GenericInstanceType(actionType);
+                actionOfT.GenericArguments.Add(genericParameter);
+                FieldDefinition callback = new FieldDefinition("callback", FieldAttributes.Public, actionOfT);
+                genericWrapper.Fields.Add(callback);
+
+                var wrapperOfT = new GenericInstanceType(genericWrapper);
+                wrapperOfT.GenericArguments.Add(genericParameter);
+                return (actionOfT, new FieldReference(callback.Name, actionOfT, wrapperOfT));
+            }
+
+            static MethodDefinition CreateInvokeMethod(ModuleDefinition moduleDefinition, GenericParameter genericParameter, TypeReference actionOfT, FieldReference callbackField)
+            {
+                var wrapMethod = new MethodDefinition("Invoke", MethodAttributes.Public, moduleDefinition.TypeSystem.Void);
+                wrapMethod.Parameters.Add(new ParameterDefinition(moduleDefinition.TypeSystem.Object) { Name = "state" });
+                var ilProcessor = wrapMethod.Body.GetILProcessor();
+                ilProcessor.Emit(OpCodes.Ldarg_0);
+                ilProcessor.Emit(OpCodes.Ldfld, callbackField);
+                ilProcessor.Emit(OpCodes.Ldarg_1);
+                ilProcessor.Emit(OpCodes.Unbox_Any, genericParameter);
+                var invokeMethod = new MethodReference("Invoke", moduleDefinition.TypeSystem.Void, actionOfT)
+                {
+                    HasThis = true
+                };
+                invokeMethod.Parameters.Add(new ParameterDefinition(genericParameter));
+                ilProcessor.Emit(OpCodes.Callvirt, invokeMethod);
+                ilProcessor.Emit(OpCodes.Ret);
+
+                return wrapMethod;
+            }
+
+            static MethodDefinition CreateConstructor(ModuleDefinition moduleDefinition, FieldReference callbackField)
+            {
+                var ctor = new MethodDefinition(".ctor", MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName | MethodAttributes.HideBySig, moduleDefinition.TypeSystem.Void);
+                ctor.Parameters.Add(new ParameterDefinition(callbackField.FieldType));
+                var ilProcessor = ctor.Body.GetILProcessor();
+                ilProcessor.Emit(OpCodes.Ldarg_0);
+                ilProcessor.Emit(OpCodes.Call, new MethodReference(".ctor", moduleDefinition.TypeSystem.Void, moduleDefinition.TypeSystem.Object));
+                ilProcessor.Emit(OpCodes.Ldarg_0);
+                ilProcessor.Emit(OpCodes.Ldarg_1);
+                ilProcessor.Emit(OpCodes.Stfld, callbackField);
+                ilProcessor.Emit(OpCodes.Ret);
+                return ctor;
+            }
+        }
+
+        private static void PatchQueueUserWorkItemGeneric(ModuleDefinition moduleDefinition, MethodDefinition methodDefinition, TypeDefinition synchronizationContext, TypeDefinition waitCallback, TypeDefinition postCallback)
+        {
+            var genericWrapper = GetGenericToObjectDelegateWrapper(moduleDefinition);
+            var wrapperOfT = new GenericInstanceType(genericWrapper);
+            wrapperOfT.GenericArguments.Add(methodDefinition.GenericParameters[0]);
+
+            var ilPProcessor = methodDefinition.Body.GetILProcessor();
+            ilPProcessor.Body.Instructions.Clear();
+            methodDefinition.Body.ExceptionHandlers.Clear();
+
+            var actionType = moduleDefinition.Types.First(t => t.FullName == "System.Action`1" && t.GenericParameters.Count == 1);
+            var actionOfT = new GenericInstanceType(actionType);
+            actionOfT.GenericArguments.Add(genericWrapper.GenericParameters[0]);
+            
+            ilPProcessor.Emit(OpCodes.Ldarg_0);
+            var wrapperCtor = new MethodReference(".ctor", moduleDefinition.TypeSystem.Void, wrapperOfT);
+            wrapperCtor.Parameters.Add(new ParameterDefinition(actionOfT));
+            wrapperCtor.HasThis = true;
+            ilPProcessor.Emit(OpCodes.Newobj, wrapperCtor);
+
+            var wrapperInvoke = new MethodReference("Invoke", moduleDefinition.TypeSystem.Void, wrapperOfT);
+            wrapperInvoke.Parameters.Add(new ParameterDefinition(moduleDefinition.TypeSystem.Object));
+            wrapperInvoke.HasThis = true;
+            ilPProcessor.Emit(OpCodes.Ldftn, wrapperInvoke);
+
+            ilPProcessor.Emit(OpCodes.Newobj, waitCallback.Methods.First(m => m.IsConstructor && m.Parameters.Count == 2));
+
+            ilPProcessor.Emit(OpCodes.Ldarg_1);
+            ilPProcessor.Emit(OpCodes.Box, methodDefinition.GenericParameters[0]);
+            var notGenericVariant = new MethodReference(methodDefinition.Name, methodDefinition.ReturnType, methodDefinition.DeclaringType);
+            notGenericVariant.Parameters.Add(new ParameterDefinition(moduleDefinition.Types.First(t => t.FullName == "System.Threading.WaitCallback")));
+            notGenericVariant.Parameters.Add(new ParameterDefinition(moduleDefinition.TypeSystem.Object));
+            ilPProcessor.Emit(OpCodes.Call, notGenericVariant);
+
+
+            ilPProcessor.Emit(OpCodes.Ret);
         }
 
         private static void PatchQueueUserWorkItem(ModuleDefinition moduleDefinition, MethodDefinition methodDefinition, TypeDefinition synchronizationContext, TypeDefinition waitCallback, TypeDefinition postCallback)
