@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Reflection;
 using UnityEngine;
@@ -10,8 +11,7 @@ namespace WebGLThreadingPatcher.Runtime
     [Preserve]
     public class TimerRunner : MonoBehaviour
     {
-        private object _timerSchedulerInstance;
-        private MethodInfo _timerSchedulerLoop;
+        private Func<int> _timerSchedulerLoop;
 
         [Preserve]
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -29,8 +29,9 @@ namespace WebGLThreadingPatcher.Runtime
             var timer = typeof(System.Threading.Timer);
             var scheduler = timer.GetNestedType("Scheduler", BindingFlags.NonPublic);
 
-            _timerSchedulerLoop = scheduler.GetMethod("RunSchedulerLoop", BindingFlags.Instance | BindingFlags.NonPublic);
-            _timerSchedulerInstance = scheduler.GetProperty("Instance").GetValue(null);
+            var timerSchedulerInstance = scheduler.GetProperty("Instance").GetValue(null);
+            _timerSchedulerLoop = (Func<int>)scheduler.GetMethod("RunSchedulerLoop", BindingFlags.Instance | BindingFlags.NonPublic)
+                .CreateDelegate(typeof(Func<int>), timerSchedulerInstance);
         }
 
         [Preserve]
@@ -49,7 +50,7 @@ namespace WebGLThreadingPatcher.Runtime
 #pragma warning disable CS0162 // Unreachable code detected
             while (true)
             {
-                var delay = (int)_timerSchedulerLoop.Invoke(_timerSchedulerInstance, null);
+                var delay = _timerSchedulerLoop();
                 if (delay == -1)
                     yield return null;
                 else
