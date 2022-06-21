@@ -1,6 +1,6 @@
 {
-    "name": "WebGLThreadingPatcher",
-    "rootNamespace": "WebGLThreadingPatcher",
+    "name": "WebGLThreadingPatcher.Editor",
+    "rootNamespace": "WebGLThreadingPatcher.Editor",
     "references": [],
     "includePlatforms": [
         "Editor"

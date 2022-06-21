@@ -7,7 +7,7 @@ using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
-namespace WebGLThreadingPatcher
+namespace WebGLThreadingPatcher.Editor
 {
     public class ThreadingPatcher : IPostBuildPlayerScriptDLLs
     {
@@ -33,7 +33,9 @@ namespace WebGLThreadingPatcher
 
                 PatchThreadPool(mainModule, threadPool, synchronizationContext, postCallback, waitCallback, taskExecutionItem);
 
-                //PatchTimerScheduler(mainModule, timeScheduler, threadPool, waitCallback);
+#if !UNITY_2021_2_OR_NEWER
+                PatchTimerScheduler(mainModule, timeScheduler, threadPool, waitCallback);
+#endif
                 assembly.Write();
             }
         }
@@ -49,7 +51,9 @@ namespace WebGLThreadingPatcher
 
                 PatchThreadPool(mainModule, threadPool, synchronizationContext, postCallback, waitCallback, taskExecutionItem);
 
-                //PatchTimerScheduler(mainModule, timeScheduler, threadPool, waitCallback);
+#if !UNITY_2021_2_OR_NEWER
+                PatchTimerScheduler(mainModule, timeScheduler, threadPool, waitCallback);
+#endif
                 assembly.Write("D:\\mscorlib_p.dll");
             }
         }
