@@ -171,7 +171,8 @@ namespace WebGLThreadingPatcher.Editor
                 ctor.Parameters.Add(new ParameterDefinition(callbackField.FieldType));
                 var ilProcessor = ctor.Body.GetILProcessor();
                 ilProcessor.Emit(OpCodes.Ldarg_0);
-                ilProcessor.Emit(OpCodes.Call, new MethodReference(".ctor", moduleDefinition.TypeSystem.Void, moduleDefinition.TypeSystem.Object));
+                //ilProcessor.Emit(OpCodes.Call, new MethodReference(".ctor", moduleDefinition.TypeSystem.Void, moduleDefinition.TypeSystem.Object));
+		ilProcessor.Emit(OpCodes.Call, new MethodReference(".ctor", moduleDefinition.TypeSystem.Void, moduleDefinition.TypeSystem.Object) { HasThis = true });
                 ilProcessor.Emit(OpCodes.Ldarg_0);
                 ilProcessor.Emit(OpCodes.Ldarg_1);
                 ilProcessor.Emit(OpCodes.Stfld, callbackField);
