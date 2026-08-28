@@ -18,7 +18,12 @@ namespace WebGLThreadingPatcher.Editor
             if (report.summary.platform != BuildTarget.WebGL)
                 return;
 
-            var mscorLibDll = report.files.FirstOrDefault(f => f.path.EndsWith("mscorlib.dll")).path;
+#if UNITY_2022_1_OR_NEWER
+            var buildFiles = report.GetFiles();
+#else
+            var buildFiles = report.files;
+#endif
+            var mscorLibDll = buildFiles.FirstOrDefault(f => f.path.EndsWith("mscorlib.dll")).path;
             if (mscorLibDll == null)
             {
                 Debug.LogError("Can't find mscorlib.dll in build dll files");
